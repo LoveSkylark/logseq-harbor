@@ -110,7 +110,7 @@ PATCHES = {
     "src/electron/electron/mcp_server.cljs": [
         (
             ':allowedHosts #js [(str host ":" port)]})',
-            ':allowedHosts #js [(str host ":" port) (str "localhost:" port) (str "127.0.0.1:" port)]})',
+            ':allowedHosts #js [(str host ":" port) (str "localhost:" port) (str "127.0.0.1:" port) (str "localhost:" (aget js/process.env "LOGSEQ_MCP_PUBLISHED_PORT")) (str "127.0.0.1:" (aget js/process.env "LOGSEQ_MCP_PUBLISHED_PORT"))]})',
         ),
     ],
 }

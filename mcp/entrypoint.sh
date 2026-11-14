@@ -15,7 +15,7 @@ Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >>/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
 while [ ! -e /tmp/.X11-unix/X99 ]; do sleep 0.5; done
 
-: "${LOGSEQ_GRAPH_NAME:?set LOGSEQ_GRAPH_NAME in .env}"
+: "${LOGSEQ_GRAPH_NAME:?set LOGSEQ_GRAPH_NAME (harbor.ps1/harbor.sh set it from config.yaml)}"
 export LOGSEQ_DATA_DIR=/data
 # The app keeps graphs and lifecycle state under $HOME/logseq, so point HOME at the persistent volume.
 export HOME=/data/home

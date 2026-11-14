@@ -1,6 +1,6 @@
 // Headless sign-in and graph bootstrap for the MCP container.
 // Run by the bundled Electron binary as Node (ELECTRON_RUN_AS_NODE=1). Signs in with the
-// account in .env, then calls the app's MCP /api route to set the tokens and download the
+// account passed in the environment, then calls the app's MCP /api route to set the tokens and download the
 // sync graph once. Then it quits the app so the entrypoint restarts it with
 // logseq://graph/<name> and MCP opens that graph.
 const fs = require('fs');
