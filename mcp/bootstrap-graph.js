@@ -76,6 +76,17 @@ async function callApi(method, args) {
   return body;
 }
 
+async function assertRemoteGraphExists(idToken) {
+  const res = await request('GET', `${env.SYNC_SERVER_URL}/graphs`, {
+    Authorization: `Bearer ${idToken}`,
+  });
+  if (res.status !== 200) throw new Error(`listing sync graphs failed: ${res.status}`);
+  const { graphs = [] } = JSON.parse(res.body);
+  if (!graphs.some((graph) => graph['graph-name'] === graphName)) {
+    throw new Error(`sync graph ${graphName} does not exist on ${env.SYNC_SERVER_URL}`);
+  }
+}
+
 async function main() {
   if (fs.existsSync(markerFile)) {
     console.log(`graph ${graphName} already downloaded; nothing to do`);
@@ -84,6 +95,8 @@ async function main() {
 
   const tokens = await signIn();
   console.log('signed in');
+  await assertRemoteGraphExists(tokens.idToken);
+  console.log(`sync graph ${graphName} found`);
 
   // Create the local graph record before the renderer opens it. Without it the first worker
   // start fails with "Graph is absent or stopped by deletion". The renderer's own createGraph
@@ -91,8 +104,13 @@ async function main() {
   const lifecycle = require('/opt/logseq/resources/app.asar/node_modules/@logseq/graph-lifecycle/index.cjs');
   const root = path.join(env.HOME, 'logseq');
   const storage = lifecycle.resolveStorage(root, path.join(root, 'graphs'));
-  await lifecycle.createGraph(storage, `logseq_db_${graphName}`);
-  console.log(`created local graph record ${graphName}`);
+  const repo = `logseq_db_${graphName}`;
+  if (fs.existsSync(lifecycle.context(storage, repo).graphDir)) {
+    console.log(`local graph record ${graphName} already exists; skipping createGraph`);
+  } else {
+    await lifecycle.createGraph(storage, repo);
+    console.log(`created local graph record ${graphName}`);
+  }
 
   await waitForMcp();
   await callApi('app@download_graph_by_name', [
