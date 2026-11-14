@@ -25,12 +25,12 @@ export SYNC_SERVER_URL="${SYNC_SERVER_URL:-http://sync:8787}"
 while :; do
   ELECTRON_RUN_AS_NODE=1 /opt/logseq/logseq /opt/harbor/bootstrap-graph.js >>"$LOG" 2>&1 &
   if [ -f "$LOGSEQ_DATA_DIR/.downloaded-$LOGSEQ_GRAPH_NAME" ]; then
-    GRAPH_ARGS="logseq://graph/$LOGSEQ_GRAPH_NAME"
+    set -- "logseq://graph/$(printf '%s' "$LOGSEQ_GRAPH_NAME" | sed 's/ /%20/g')"
   else
-    GRAPH_ARGS=""
+    set --
   fi
   dbus-run-session -- /opt/logseq/logseq --no-sandbox --disable-gpu --ozone-platform=headless --proxy-server=direct:// \
     --user-data-dir=/data/electron \
-    $GRAPH_ARGS >>"$LOG" 2>&1
+    "$@" >>"$LOG" 2>&1
   sleep 3
 done

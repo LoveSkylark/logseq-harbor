@@ -23,8 +23,6 @@ if [[ -n "${HARBOR_RUNTIME_ARGS:-}" ]]; then
 fi
 
 network=harbor-net
-# Existing sync volume from the compose era. Renaming it would orphan the sync graph data.
-sync_volume=logseq-harbor_logseq-db
 sync_image=localhost/logseq-sync:latest
 web_image=localhost/logseq-web:latest
 mcp_image=localhost/logseq-mcp:latest
@@ -95,6 +93,11 @@ ensure_volume() {
   fi
 }
 
+# Container and volume names cannot contain spaces, so they use a slug of the graph name.
+graph_slug() {
+  printf '%s' "$1" | sed -E 's/[^A-Za-z0-9_-]+/-/g; s/^-+//; s/-+$//'
+}
+
 build_images() {
   if [[ ! -d "$logseq_src" ]]; then
     echo "logseq source not found at $logseq_src (set HARBOR_LOGSEQ_SRC)" >&2
@@ -138,8 +141,8 @@ start_stack() {
     exit 1
   fi
   for graph in "${graphs[@]}"; do
-    if [[ ! "$graph" =~ ^[A-Za-z0-9_-]+$ ]]; then
-      echo "graph '$graph' may only contain letters, digits, '-' and '_'" >&2
+    if [[ "$graph" == *[\\/:\*\?\"\<\>\|]* || "$graph" =~ ^[[:space:]] || "$graph" =~ [[:space:]]$ || -z "$(graph_slug "$graph")" ]]; then
+      echo "graph '$graph' must be a valid folder name (no \\ / : * ? \" < > |)" >&2
       exit 1
     fi
   done
@@ -152,8 +155,9 @@ start_stack() {
       exit 1
       ;;
   esac
-  local graphs_dir
+  local graphs_dir sync_data_dir
   graphs_dir="$(expand_home "${settings[graphs_dir]:-~/logseq-harbor/graphs}")"
+  sync_data_dir="$(expand_home "${settings[sync_data_dir]:-~/logseq-harbor/sync-data}")"
 
   local base_url="${settings[db_sync_base_url]:-http://localhost:$sync_port}"
 
@@ -172,10 +176,9 @@ start_stack() {
   if ! rt network inspect "$network" >/dev/null 2>&1; then
     rt network create --subnet 10.89.1.0/24 "$network" >/dev/null
   fi
-  ensure_volume "$sync_volume"
-
+  mkdir -p "$sync_data_dir"
   local -a stale=(logseq-sync logseq-web logseq-mcp)
-  for graph in "${graphs[@]}"; do stale+=("logseq-mcp-$graph"); done
+  for graph in "${graphs[@]}"; do stale+=("logseq-mcp-$(graph_slug "$graph")"); done
   remove_containers "${stale[@]}"
 
   rt run -d --name logseq-sync --network "$network" --restart unless-stopped \
@@ -185,7 +188,7 @@ start_stack() {
     -e DB_SYNC_ADMIN_TOKEN \
     -e "COGNITO_ISSUER=$cognito_issuer" -e "COGNITO_CLIENT_ID=$cognito_client_id" \
     -e "COGNITO_JWKS_URL=$cognito_issuer/.well-known/jwks.json" \
-    -v "$sync_volume:/app/data" --read-only --tmpfs /tmp --cap-drop ALL \
+    -v "$sync_data_dir:/app/data" --read-only --tmpfs /tmp --cap-drop ALL \
     --security-opt no-new-privileges:true "$sync_image" >/dev/null
   wait_for_sync
   echo "sync on http://localhost:$sync_port"
@@ -198,15 +201,16 @@ start_stack() {
     echo "web disabled in config.yaml"
   fi
 
-  local i port volume host_dir
+  local i port volume host_dir slug
   for i in "${!graphs[@]}"; do
     graph="${graphs[$i]}"
+    slug="$(graph_slug "$graph")"
     port=$((mcp_base_port + i))
-    volume="mcp-data-$graph"
+    volume="mcp-data-$slug"
     host_dir="$graphs_dir/$graph"
     mkdir -p "$host_dir"
     ensure_volume "$volume"
-    rt run -d --name "logseq-mcp-$graph" --network "$network" --restart unless-stopped \
+    rt run -d --name "logseq-mcp-$slug" --network "$network" --restart unless-stopped \
       --shm-size 1gb -p "$port:12315" -v "$volume:/data" \
       -v "$host_dir:/data/home/logseq/graphs/$graph" \
       -e LOGSEQ_MCP_ENABLED=true -e LOGSEQ_MCP_HOST=0.0.0.0 -e LOGSEQ_MCP_PORT=12315 \

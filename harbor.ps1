@@ -30,8 +30,6 @@ $runtime = if ($env:HARBOR_RUNTIME) { $env:HARBOR_RUNTIME } else { 'podman' }
 $runtimeArgs = if ($env:HARBOR_RUNTIME_ARGS) { @($env:HARBOR_RUNTIME_ARGS -split ' ' | Where-Object { $_ }) } else { @() }
 
 $network = 'harbor-net'
-# Existing sync volume from the compose era. Renaming it would orphan the sync graph data.
-$syncVolume = 'logseq-harbor_logseq-db'
 $syncImage = 'localhost/logseq-sync:latest'
 $webImage = 'localhost/logseq-web:latest'
 $mcpImage = 'localhost/logseq-mcp:latest'
@@ -129,6 +127,11 @@ function Resolve-HostPath([string]$Path) {
     return [IO.Path]::GetFullPath($Path)
 }
 
+# Container and volume names cannot contain spaces, so they use a slug of the graph name.
+function Get-GraphSlug([string]$Name) {
+    ($Name -replace '[^A-Za-z0-9_-]+', '-').Trim('-')
+}
+
 function Start-Stack {
     $settings = Read-Settings
     $secrets = @{}
@@ -141,8 +144,8 @@ function Start-Stack {
     $graphs = @($settings['graphs'] | Where-Object { $_ })
     if ($graphs.Count -eq 0) { throw 'list at least one graph under graphs: in config.yaml' }
     foreach ($graph in $graphs) {
-        if ($graph -notmatch '^[A-Za-z0-9_-]+$') {
-            throw "graph '$graph' may only contain letters, digits, '-' and '_'"
+        if ($graph -match '[\\/:*?"<>|]' -or $graph -ne $graph.Trim() -or -not (Get-GraphSlug $graph)) {
+            throw "graph '$graph' must be a valid folder name (no \ / : * ? `" < > |)"
         }
     }
     $webEnabled = switch ($settings['web']) {
@@ -151,6 +154,7 @@ function Start-Stack {
         default { throw "web must be true or false in config.yaml, got '$($settings['web'])'" }
     }
     $graphsDir = Resolve-HostPath $(if ($settings['graphs_dir']) { $settings['graphs_dir'] } else { '~/logseq-harbor/graphs' })
+    $syncDataDir = Resolve-HostPath $(if ($settings['sync_data_dir']) { $settings['sync_data_dir'] } else { '~/logseq-harbor/sync-data' })
     $baseUrl = if ($settings['db_sync_base_url']) { $settings['db_sync_base_url'] } else { "http://localhost:$syncPort" }
 
     foreach ($image in $syncImage, $webImage, $mcpImage) {
@@ -162,8 +166,8 @@ function Start-Stack {
 
     # 10.89.1.0/24 is the subnet allowed by harbor-forward.service on the Podman VM.
     if (-not (Test-Rt network inspect $network)) { Invoke-Rt network create --subnet 10.89.1.0/24 $network | Out-Null }
-    Ensure-Volume $syncVolume
-    Remove-HarborContainers (@('logseq-sync', 'logseq-web', 'logseq-mcp') + @($graphs | ForEach-Object { "logseq-mcp-$_" }))
+    New-Item -ItemType Directory -Force -Path $syncDataDir | Out-Null
+    Remove-HarborContainers (@('logseq-sync', 'logseq-web', 'logseq-mcp') + @($graphs | ForEach-Object { 'logseq-mcp-' + (Get-GraphSlug $_) }))
 
     Invoke-Rt run -d --name logseq-sync --network $network --restart unless-stopped `
         -p "${syncPort}:8787" `
@@ -172,7 +176,7 @@ function Start-Stack {
         -e DB_SYNC_ADMIN_TOKEN `
         -e "COGNITO_ISSUER=$cognitoIssuer" -e "COGNITO_CLIENT_ID=$cognitoClientId" `
         -e "COGNITO_JWKS_URL=$cognitoIssuer/.well-known/jwks.json" `
-        -v "${syncVolume}:/app/data" --read-only --tmpfs /tmp --cap-drop ALL `
+        -v "$($syncDataDir -replace '\\', '/'):/app/data" --read-only --tmpfs /tmp --cap-drop ALL `
         --security-opt no-new-privileges:true $syncImage | Out-Null
     Wait-ForSync
     Write-Host "sync on http://localhost:$syncPort"
@@ -188,13 +192,14 @@ function Start-Stack {
     for ($i = 0; $i -lt $graphs.Count; $i++) {
         $graph = $graphs[$i]
         $port = $mcpBasePort + $i
-        $volume = "mcp-data-$graph"
+        $slug = Get-GraphSlug $graph
+        $volume = "mcp-data-$slug"
         $hostDir = Join-Path $graphsDir $graph
         New-Item -ItemType Directory -Force -Path $hostDir | Out-Null
         # Podman accepts forward slashes for Windows host paths.
         $hostMount = $hostDir -replace '\\', '/'
         Ensure-Volume $volume
-        Invoke-Rt run -d --name "logseq-mcp-$graph" --network $network --restart unless-stopped `
+        Invoke-Rt run -d --name "logseq-mcp-$slug" --network $network --restart unless-stopped `
             --shm-size 1gb -p "${port}:12315" -v "${volume}:/data" `
             -v "${hostMount}:/data/home/logseq/graphs/$graph" `
             -e LOGSEQ_MCP_ENABLED=true -e LOGSEQ_MCP_HOST=0.0.0.0 -e LOGSEQ_MCP_PORT=12315 `

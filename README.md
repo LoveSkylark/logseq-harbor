@@ -46,6 +46,8 @@ logseq_password: <your Logseq account password>
 - `web`: `true` starts the web app on port 8080; `false` skips it.
 - `graphs_dir`: host folder for the graph files. Each graph is mounted at `<graphs_dir>/<graph>`.
   `~` means your home folder.
+- `sync_data_dir`: optional host folder for the sync server's data (`index.sqlite`, assets, graphs). Defaults to
+  `~/logseq-harbor/sync-data`. It holds the account encryption key, so back it up.
 
 Only use plain `key: value` pairs and the `graphs:` list. Do not add inline comments after values.
 Values can be set in the environment instead, which overrides `config.yaml` (for example
@@ -98,7 +100,7 @@ The endpoint returns `401` without the token and `200` with it.
 
 | Volume or folder | Holds |
 | --- | --- |
-| `logseq-harbor_logseq-db` | Sync server data (graphs, assets) |
+| `<sync_data_dir>` (host, default `~/logseq-harbor/sync-data`) | Sync server data: `index.sqlite` with the account key, graphs, assets |
 | `mcp-data-<graph>` | Each MCP container's home folder: lifecycle state and the download marker |
 | `<graphs_dir>/<graph>` (host) | The graph's files, mounted into the MCP container |
 
