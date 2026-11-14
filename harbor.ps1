@@ -13,12 +13,13 @@ container CLI, e.g. HARBOR_RUNTIME_ARGS="--remote --connection podman-machine-de
 .PARAMETER Command
 build  - build the sync, web and MCP images
 up     - start sync and web, then one MCP container per graph
+update - start MCP containers only for graphs in config.yaml that have no container yet
 stop   - remove all harbor containers (volumes are kept)
-status - list harbor containers
+status - list harbor containers and active MCP portals
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('build', 'up', 'stop', 'status')]
+    [ValidateSet('build', 'up', 'update', 'stop', 'status')]
     [string]$Command = 'up'
 )
 
@@ -132,7 +133,7 @@ function Get-GraphSlug([string]$Name) {
     ($Name -replace '[^A-Za-z0-9_-]+', '-').Trim('-')
 }
 
-function Start-Stack {
+function Start-Stack([switch]$McpOnly) {
     $settings = Read-Settings
     $secrets = @{}
     foreach ($name in $secretNames) {
@@ -166,6 +167,14 @@ function Start-Stack {
 
     # 10.89.1.0/24 is the subnet allowed by harbor-forward.service on the Podman VM.
     if (-not (Test-Rt network inspect $network)) { Invoke-Rt network create --subnet 10.89.1.0/24 $network | Out-Null }
+    if ($McpOnly) {
+        $running = @(& $runtime @runtimeArgs ps --filter 'name=^logseq-sync$' --filter 'status=running' --format '{{.Names}}' 2>$null)
+        if ($running -notcontains 'logseq-sync') { throw 'logseq-sync is not running; run harbor.ps1 up first' }
+        Start-McpContainers $graphs $graphsDir -OnlyMissing
+        Show-McpPortals
+        return
+    }
+
     New-Item -ItemType Directory -Force -Path $syncDataDir | Out-Null
     Remove-HarborContainers (@('logseq-sync', 'logseq-web', 'logseq-mcp') + @($graphs | ForEach-Object { 'logseq-mcp-' + (Get-GraphSlug $_) }))
 
@@ -189,12 +198,35 @@ function Start-Stack {
         Write-Host 'web disabled in config.yaml'
     }
 
-    for ($i = 0; $i -lt $graphs.Count; $i++) {
-        $graph = $graphs[$i]
-        $port = $mcpBasePort + $i
+    Start-McpContainers $graphs $graphsDir
+    Show-McpPortals
+}
+
+function Start-McpContainers([string[]]$Graphs, [string]$GraphsDir, [switch]$OnlyMissing) {
+    # update must not reuse a port held by a running portal, so it takes the first free one.
+    $usedPorts = @()
+    if ($OnlyMissing) {
+        $usedPorts = @(& $runtime @runtimeArgs ps --filter 'name=logseq-mcp-' --format '{{.Ports}}' 2>$null |
+            ForEach-Object { if ($_ -match ':(\d+)->') { [int]$Matches[1] } })
+    }
+    $nextFree = $mcpBasePort
+    for ($i = 0; $i -lt $Graphs.Count; $i++) {
+        $graph = $Graphs[$i]
         $slug = Get-GraphSlug $graph
+        if ($OnlyMissing) {
+            $running = @(& $runtime @runtimeArgs ps --filter "name=^logseq-mcp-$slug$" --filter 'status=running' --format '{{.Names}}' 2>$null)
+            if ($running.Count -gt 0) { continue }
+            Remove-HarborContainers @("logseq-mcp-$slug") 
+        }
+        if ($OnlyMissing) {
+            while ($usedPorts -contains $nextFree) { $nextFree++ }
+            $port = $nextFree
+            $usedPorts += $port
+        } else {
+            $port = $mcpBasePort + $i
+        }
         $volume = "mcp-data-$slug"
-        $hostDir = Join-Path $graphsDir $graph
+        $hostDir = Join-Path $GraphsDir $graph
         New-Item -ItemType Directory -Force -Path $hostDir | Out-Null
         # Podman accepts forward slashes for Windows host paths.
         $hostMount = $hostDir -replace '\\', '/'
@@ -206,7 +238,19 @@ function Start-Stack {
             -e LOGSEQ_MCP_TOKEN -e LOGSEQ_USERNAME -e LOGSEQ_PASSWORD `
             -e "LOGSEQ_GRAPH_NAME=$graph" -e "LOGSEQ_MCP_PUBLISHED_PORT=$port" -e "COGNITO_CLIENT_ID=$cognitoClientId" `
             -e SYNC_SERVER_URL=http://logseq-sync:8787 $mcpImage | Out-Null
-        Write-Host "mcp for '$graph' on http://localhost:$port/mcp (files in $hostDir)"
+        Write-Host "started MCP container for '$graph'"
+    }
+}
+
+function Show-McpPortals {
+    $names = @(& $runtime @runtimeArgs ps --filter 'name=logseq-mcp-' --filter 'status=running' --format '{{.Names}}' 2>$null)
+    if ($names.Count -eq 0) { Write-Host 'no active MCP portals'; return }
+    Write-Host 'Active MCP portals:'
+    foreach ($name in $names) {
+        $envVars = @(& $runtime @runtimeArgs inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $name)
+        $graph = ($envVars | Where-Object { $_ -like 'LOGSEQ_GRAPH_NAME=*' }) -replace '^LOGSEQ_GRAPH_NAME=', ''
+        $port = ($envVars | Where-Object { $_ -like 'LOGSEQ_MCP_PUBLISHED_PORT=*' }) -replace '^LOGSEQ_MCP_PUBLISHED_PORT=', ''
+        Write-Host "  '$graph' -> http://localhost:$port/mcp"
     }
 }
 
@@ -214,11 +258,15 @@ try {
     switch ($Command) {
         'build' { Build-Images }
         'up' { Start-Stack }
+        'update' { Start-Stack -McpOnly }
         'stop' {
             $names = Get-HarborContainers
             if ($names.Count -eq 0) { Write-Host 'no harbor containers' } else { Remove-HarborContainers $names }
         }
-        'status' { Invoke-Rt ps -a --filter 'name=logseq-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' }
+        'status' {
+            Invoke-Rt ps -a --filter 'name=logseq-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+            Show-McpPortals
+        }
     }
 } finally {
     foreach ($name in $secretNames) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }

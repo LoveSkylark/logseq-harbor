@@ -75,9 +75,20 @@ later source-only changes only rerun the compile steps.
 
 ```powershell
 .\harbor.ps1 up        # or: ./harbor.sh up
-.\harbor.ps1 status    # list the containers
+.\harbor.ps1 update    # start MCP containers for graphs added to config.yaml since the last run
+.\harbor.ps1 status    # list the containers and the active MCP portals
 .\harbor.ps1 stop      # remove the containers (data volumes are kept)
 ```
+
+`up` and `status` print every active MCP portal (graph name and URL). `update` leaves running containers
+alone and only creates the MCP containers that do not exist yet, so it needs the sync container to be
+running. It gives each new container the first port that no running portal uses. `up` assigns ports by a
+graph's position in `graphs:` (12315, 12316, ...), so after `up` a graph's port can differ from the one
+`update` gave it. Check the printed portal list for the real ports.
+
+Graph names may contain spaces (for example `Campaign - Northern Light`). The folder and mount path use the
+exact name. Container and volume names use a slug with only letters, digits, `-` and `_`, so the example
+becomes `logseq-mcp-Campaign---Northern-Light` and `mcp-data-Campaign---Northern-Light`.
 
 - Sync: `http://localhost:8787`
 - Web app (when `web: true`): `http://localhost:8080`

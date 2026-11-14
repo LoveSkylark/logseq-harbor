@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Builds and runs the Logseq harbor stack: sync, web, and one MCP container per graph.
 #
-# Usage: ./harbor.sh {build|up|stop|status}
+# Usage: ./harbor.sh {build|up|update|stop|status}
 #   build   build the sync, web and MCP images
 #   up      start sync and web, then one MCP container per graph
+#   update  start MCP containers only for graphs in config.yaml that have no container yet
 #   stop    remove all harbor containers (volumes are kept)
-#   status  list harbor containers
+#   status  list harbor containers and active MCP portals
 #
 # Reads config.yaml next to this script. 'graphs' lists the graphs; each gets its own MCP container,
 # host port (12315, 12316, ...), volume and host directory under graphs_dir. 'web: false' skips the
@@ -124,6 +125,8 @@ wait_for_sync() {
 }
 
 start_stack() {
+  local mcp_only=false
+  [[ "${1:-}" == --mcp-only ]] && mcp_only=true
   read_settings
   local name
   for name in "${secret_names[@]}"; do
@@ -176,6 +179,16 @@ start_stack() {
   if ! rt network inspect "$network" >/dev/null 2>&1; then
     rt network create --subnet 10.89.1.0/24 "$network" >/dev/null
   fi
+  if [[ "$mcp_only" == true ]]; then
+    if [[ "$(rt ps --filter 'name=^logseq-sync$' --filter 'status=running' --format '{{.Names}}')" != logseq-sync ]]; then
+      echo "logseq-sync is not running; run '$0 up' first" >&2
+      exit 1
+    fi
+    start_mcp_containers true "$graphs_dir" "${graphs[@]}"
+    show_mcp_portals
+    return
+  fi
+
   mkdir -p "$sync_data_dir"
   local -a stale=(logseq-sync logseq-web logseq-mcp)
   for graph in "${graphs[@]}"; do stale+=("logseq-mcp-$(graph_slug "$graph")"); done
@@ -201,11 +214,37 @@ start_stack() {
     echo "web disabled in config.yaml"
   fi
 
-  local i port volume host_dir slug
+  start_mcp_containers false "$graphs_dir" "${graphs[@]}"
+  show_mcp_portals
+}
+
+# Usage: start_mcp_containers <only_missing true|false> <graphs_dir> <graph>...
+# Up assigns ports by the graph's position in config.yaml. Update takes the first free port instead,
+# so it never collides with a running portal.
+start_mcp_containers() {
+  local only_missing="$1" graphs_dir="$2"
+  shift 2
+  local -a graphs=("$@")
+  local i graph port volume host_dir slug next_port=$mcp_base_port used=""
+  if [[ "$only_missing" == true ]]; then
+    used=" $(rt ps --filter 'name=logseq-mcp-' --format '{{.Ports}}' | sed -n 's/.*:\([0-9]*\)->.*/\1/p' | tr '\n' ' ')"
+  fi
   for i in "${!graphs[@]}"; do
     graph="${graphs[$i]}"
     slug="$(graph_slug "$graph")"
-    port=$((mcp_base_port + i))
+    if [[ "$only_missing" == true ]]; then
+      if [[ -n "$(rt ps --filter "name=^logseq-mcp-$slug\$" --filter 'status=running' --format '{{.Names}}')" ]]; then
+        continue
+      fi
+      remove_containers "logseq-mcp-$slug"
+    fi
+    if [[ "$only_missing" == true ]]; then
+      while [[ "$used" == *" $next_port "* ]]; do next_port=$((next_port + 1)); done
+      port=$next_port
+      used+="$port "
+    else
+      port=$((mcp_base_port + i))
+    fi
     volume="mcp-data-$slug"
     host_dir="$graphs_dir/$graph"
     mkdir -p "$host_dir"
@@ -218,7 +257,23 @@ start_stack() {
       -e "LOGSEQ_GRAPH_NAME=$graph" -e "LOGSEQ_MCP_PUBLISHED_PORT=$port" \
       -e "COGNITO_CLIENT_ID=$cognito_client_id" \
       -e SYNC_SERVER_URL=http://logseq-sync:8787 "$mcp_image" >/dev/null
-    echo "mcp for '$graph' on http://localhost:$port/mcp"
+    echo "started MCP container for '$graph'"
+  done
+}
+
+show_mcp_portals() {
+  local name graph port
+  local -a names
+  mapfile -t names < <(rt ps --filter 'name=logseq-mcp-' --filter 'status=running' --format '{{.Names}}')
+  if [[ ${#names[@]} -eq 0 ]]; then
+    echo "no active MCP portals"
+    return
+  fi
+  echo "Active MCP portals:"
+  for name in "${names[@]}"; do
+    graph="$(rt inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" | sed -n 's/^LOGSEQ_GRAPH_NAME=//p')"
+    port="$(rt inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" | sed -n 's/^LOGSEQ_MCP_PUBLISHED_PORT=//p')"
+    echo "  '$graph' -> http://localhost:$port/mcp"
   done
 }
 
@@ -242,10 +297,14 @@ trap clear_secrets EXIT
 case "${1:-up}" in
   build) build_images ;;
   up) start_stack ;;
+  update) start_stack --mcp-only ;;
   stop) stop_stack ;;
-  status) rt ps -a --filter 'name=logseq-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' ;;
+  status)
+    rt ps -a --filter 'name=logseq-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    show_mcp_portals
+    ;;
   *)
-    echo "usage: $0 {build|up|stop|status}" >&2
+    echo "usage: $0 {build|up|update|stop|status}" >&2
     exit 2
     ;;
 esac
