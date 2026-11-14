@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Builds and runs the Logseq harbor stack: sync, web, and one MCP container per graph.
 #
-# Usage: ./harbor.sh {build|up|update|stop|status}
-#   build   build the sync, web and MCP images
-#   up      start sync and web, then one MCP container per graph
-#   update  start MCP containers only for graphs in config.yaml that have no container yet
-#   stop    remove all harbor containers (volumes are kept)
-#   status  list harbor containers and active MCP portals
+# Usage: ./harbor.sh {build|up|update [clear]|stop|status}
+#   build         build the sync, web and MCP images
+#   up            start sync and web, then one MCP container per graph
+#   update        start MCP containers only for graphs in config.yaml that have no container yet
+#   update clear  also remove MCP containers for graphs no longer in config.yaml (volumes are kept)
+#   stop          remove all harbor containers (volumes are kept)
+#   status        list harbor containers and active MCP portals
 #
 # Reads config.yaml next to this script. 'graphs' lists the graphs; each gets its own MCP container,
 # host port (12315, 12316, ...), volume and host directory under graphs_dir. 'web: false' skips the
@@ -184,6 +185,20 @@ start_stack() {
       echo "logseq-sync is not running; run '$0 up' first" >&2
       exit 1
     fi
+    if [[ "${2:-}" == clear ]]; then
+      # Removed before starting new ones so their host ports are free for reuse.
+      local -a expected=() existing=() stale=()
+      for graph in "${graphs[@]}"; do expected+=("logseq-mcp-$(graph_slug "$graph")"); done
+      mapfile -t existing < <(rt ps -a --filter 'name=^logseq-mcp-' --format '{{.Names}}')
+      for name in "${existing[@]}"; do
+        [[ -z "$name" ]] && continue
+        if ! printf '%s\n' "${expected[@]}" | grep -qxF "$name"; then stale+=("$name"); fi
+      done
+      if [[ ${#stale[@]} -gt 0 ]]; then
+        remove_containers "${stale[@]}"
+        echo "removed MCP containers for graphs no longer in config.yaml: ${stale[*]}"
+      fi
+    fi
     start_mcp_containers true "$graphs_dir" "${graphs[@]}"
     show_mcp_portals
     return
@@ -297,14 +312,14 @@ trap clear_secrets EXIT
 case "${1:-up}" in
   build) build_images ;;
   up) start_stack ;;
-  update) start_stack --mcp-only ;;
+  update) start_stack --mcp-only "${2:-}" ;;
   stop) stop_stack ;;
   status)
     rt ps -a --filter 'name=logseq-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
     show_mcp_portals
     ;;
   *)
-    echo "usage: $0 {build|up|update|stop|status}" >&2
+    echo "usage: $0 {build|up|update [clear]|stop|status}" >&2
     exit 2
     ;;
 esac

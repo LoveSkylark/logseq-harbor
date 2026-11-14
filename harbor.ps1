@@ -14,14 +14,20 @@ container CLI, e.g. HARBOR_RUNTIME_ARGS="--remote --connection podman-machine-de
 build  - build the sync, web and MCP images
 up     - start sync and web, then one MCP container per graph
 update - start MCP containers only for graphs in config.yaml that have no container yet
+update clear - also remove MCP containers for graphs no longer in config.yaml (volumes are kept)
 stop   - remove all harbor containers (volumes are kept)
 status - list harbor containers and active MCP portals
 #>
 param(
     [Parameter(Position = 0)]
     [ValidateSet('build', 'up', 'update', 'stop', 'status')]
-    [string]$Command = 'up'
+    [string]$Command = 'up',
+    [Parameter(Position = 1)]
+    [ValidateSet('clear')]
+    [string]$Option
 )
+
+if ($Option -and $Command -ne 'update') { throw "'$Option' is only valid with 'update'" }
 
 $ErrorActionPreference = 'Stop'
 
@@ -133,7 +139,7 @@ function Get-GraphSlug([string]$Name) {
     ($Name -replace '[^A-Za-z0-9_-]+', '-').Trim('-')
 }
 
-function Start-Stack([switch]$McpOnly) {
+function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
     $settings = Read-Settings
     $secrets = @{}
     foreach ($name in $secretNames) {
@@ -170,6 +176,16 @@ function Start-Stack([switch]$McpOnly) {
     if ($McpOnly) {
         $running = @(& $runtime @runtimeArgs ps --filter 'name=^logseq-sync$' --filter 'status=running' --format '{{.Names}}' 2>$null)
         if ($running -notcontains 'logseq-sync') { throw 'logseq-sync is not running; run harbor.ps1 up first' }
+        if ($ClearStale) {
+            # Removed before starting new ones so their host ports are free for reuse.
+            $expected = @($graphs | ForEach-Object { 'logseq-mcp-' + (Get-GraphSlug $_) })
+            $existing = @(& $runtime @runtimeArgs ps -a --filter 'name=^logseq-mcp-' --format '{{.Names}}' 2>$null)
+            $stale = @($existing | Where-Object { $expected -notcontains $_ })
+            if ($stale.Count -gt 0) {
+                Remove-HarborContainers $stale
+                Write-Host "removed MCP containers for graphs no longer in config.yaml: $($stale -join ', ')"
+            }
+        }
         Start-McpContainers $graphs $graphsDir -OnlyMissing
         Show-McpPortals
         return
@@ -258,7 +274,7 @@ try {
     switch ($Command) {
         'build' { Build-Images }
         'up' { Start-Stack }
-        'update' { Start-Stack -McpOnly }
+        'update' { Start-Stack -McpOnly -ClearStale:($Option -eq 'clear') }
         'stop' {
             $names = Get-HarborContainers
             if ($names.Count -eq 0) { Write-Host 'no harbor containers' } else { Remove-HarborContainers $names }

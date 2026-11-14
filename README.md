@@ -76,6 +76,7 @@ later source-only changes only rerun the compile steps.
 ```powershell
 .\harbor.ps1 up        # or: ./harbor.sh up
 .\harbor.ps1 update    # start MCP containers for graphs added to config.yaml since the last run
+.\harbor.ps1 update clear  # also remove MCP containers for graphs removed from config.yaml
 .\harbor.ps1 status    # list the containers and the active MCP portals
 .\harbor.ps1 stop      # remove the containers (data volumes are kept)
 ```
