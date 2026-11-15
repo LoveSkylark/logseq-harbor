@@ -5,7 +5,8 @@ Containers for running Logseq's sync server, web app, and MCP server on your own
 | Service | Image | Port | What it does |
 | --- | --- | --- | --- |
 | `sync` | `localhost/logseq-sync` | 8787 | DB sync server (SQLite storage, filesystem assets) |
-| `web` | `localhost/logseq-web` | 8080 | Logseq web app served by nginx |
+| `proxy` | `nginx:alpine` | 8080 | Single entry point: `/` web app, `/sync/` sync, `/mcp` graph list, `/mcp/<route>` one graph's MCP |
+| `web` | `localhost/logseq-web` | none | Logseq web app served by nginx, reached through the proxy (only when `web: true`) |
 | `mcp` | `localhost/logseq-mcp` | 12315+ | Logseq desktop app under Xvfb, with its MCP HTTP server enabled; one container per graph |
 
 The `mcp` service signs in to your Logseq account with credentials from `config.yaml` and downloads one
@@ -45,7 +46,7 @@ logseq_e2ee_password: <your Logseq encryption password>
 ```
 
 - `graphs`: one MCP container starts per entry. Ports are assigned in order from 12315 (12315, 12316, ...).
-- `web`: `true` starts the web app on port 8080; `false` skips it.
+- `web`: `true` starts the web app behind the proxy at `http://localhost:8080/`; `false` skips it. The proxy starts either way.
 - `graphs_dir`: host folder for the graph files. Each graph is mounted at `<graphs_dir>/<graph>`.
   `~` means your home folder.
 - `sync_data_dir`: optional host folder for the sync server's data (`index.sqlite`, assets, graphs). Defaults to
@@ -96,9 +97,22 @@ exact name. Container and volume names use a slug with only letters, digits, `-`
 becomes `logseq-mcp-Campaign---Northern-Light` and `mcp-data-Campaign---Northern-Light`.
 
 - Sync: `http://localhost:8787`
-- Web app (when `web: true`): `http://localhost:8080`
-- MCP, one per graph: `http://localhost:12315/mcp`, `12316`, ... in the order listed in `config.yaml`,
-  with `Authorization: Bearer <logseq_mcp_token>`
+- Proxy: `http://localhost:8080`
+  - `/` web app (only when `web: true`)
+  - `/sync/` sync server (`/sync` redirects there)
+  - `/mcp` JSON list of running graphs, each with `graph`, `route` and `url`. No auth.
+  - `/mcp/<route>` MCP for one graph, with `Authorization: Bearer <logseq_mcp_token>`. The route is the
+    graph name lowercased, with each run of other characters turned into `-`
+    (`Campaign - 7th Trial` becomes `campaign-7th-trial`). Routes are case-sensitive.
+- MCP, one per graph, also on its own port: `http://localhost:12315/mcp`, `12316`, ... in the order listed
+  in `config.yaml`, with the same bearer token
+
+The proxy is generated from the running containers on `up` and `update`. nginx resolves upstreams at
+startup, so after restarting an MCP container, restart `logseq-proxy` too.
+
+Multiple graphs can be used from one Claude Desktop client with
+[extensions/logseq-harbor-connect](./extensions/logseq-harbor-connect/README.md). It reads `/mcp` and
+connects to every graph listed there.
 
 On first start, each MCP container signs in, downloads its graph into `<graphs_dir>/<graph>`, writes a
 marker file (`.downloaded-<graph>`) in its data volume, and restarts the app with the graph open. Later
@@ -136,6 +150,8 @@ Removing containers keeps the data. Use `podman volume rm` only when you want to
 ## Layout
 
 - `harbor.ps1`, `harbor.sh`: build and run the stack (PowerShell and bash)
+- `extensions/logseq-harbor-connect/`: Claude Desktop extension that connects to every graph listed by `/mcp`
+- `skills/logseq-db/`: agent skill for DB graphs, including `reference/harbor-multi-graph.md`
 - `config.yaml`: your graphs, web switch, host graph folder and credentials (git-ignored)
 - `sync/Dockerfile`, `web/Dockerfile`: sync and web images, built from the `logseq` source
 - `mcp/Dockerfile`: builds the Electron app and creates the headless runtime image
