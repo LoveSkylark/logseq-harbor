@@ -1,11 +1,18 @@
 <#
 .SYNOPSIS
-Builds and runs the Logseq harbor stack: sync, web, and one MCP container per graph.
+Builds and runs the Logseq harbor stack: sync, web, one MCP container per graph, and a reverse proxy.
 
 .DESCRIPTION
 Reads config.yaml next to this script. Each entry under 'graphs' gets its own MCP container, host
 port (12315, 12316, ...), volume and host directory under graphs_dir. 'web: false' skips the web
 container. Secrets may also be set in the process environment, which overrides config.yaml.
+
+The reverse proxy (logseq-proxy) listens on port 8080 and routes:
+  /              web app
+  /sync/         sync server
+  /mcp           JSON list of running graphs
+  /mcp/<route>   MCP server for that graph (route is the lowercase graph name with '-' separators)
+Its config is generated into ~/logseq-harbor/proxy on every up and update.
 
 HARBOR_RUNTIME (default: podman) and HARBOR_RUNTIME_ARGS (extra CLI arguments) select the
 container CLI, e.g. HARBOR_RUNTIME_ARGS="--remote --connection podman-machine-default-root".
@@ -40,6 +47,7 @@ $network = 'harbor-net'
 $syncImage = 'localhost/logseq-sync:latest'
 $webImage = 'localhost/logseq-web:latest'
 $mcpImage = 'localhost/logseq-mcp:latest'
+$proxyImage = 'docker.io/library/nginx:alpine'
 $syncPort = 8787
 $webPort = 8080
 $mcpBasePort = 12315
@@ -90,7 +98,7 @@ function Read-Settings {
 }
 
 function Get-HarborContainers {
-    @(Invoke-Rt ps -a --format '{{.Names}}' | Where-Object { $_ -match '^logseq-(sync|web|mcp(-|$))' })
+    @(Invoke-Rt ps -a --format '{{.Names}}' | Where-Object { $_ -match '^logseq-(sync|web|proxy|mcp(-|$))' })
 }
 
 function Remove-HarborContainers([string[]]$Names) {
@@ -140,6 +148,114 @@ function Get-GraphSlug([string]$Name) {
     ($Name -replace '[^A-Za-z0-9_-]+', '-').Trim('-')
 }
 
+# URL path segment for a graph: lowercase letters, digits and '-', e.g. 'Campaign - 7th Trial' -> 'campaign-7th-trial'.
+function Get-RouteSlug([string]$Name) {
+    ($Name.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
+}
+
+# Running MCP containers with the graph name and host port recorded when they were started.
+function Get-McpPortals {
+    $names = @(& $runtime @runtimeArgs ps --filter 'name=logseq-mcp-' --filter 'status=running' --format '{{.Names}}' 2>$null)
+    foreach ($name in $names) {
+        $envVars = @(& $runtime @runtimeArgs inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $name)
+        [pscustomobject]@{
+            Container = $name
+            Graph     = ($envVars | Where-Object { $_ -like 'LOGSEQ_GRAPH_NAME=*' }) -replace '^LOGSEQ_GRAPH_NAME=', ''
+            Port      = [int](($envVars | Where-Object { $_ -like 'LOGSEQ_MCP_PUBLISHED_PORT=*' }) -replace '^LOGSEQ_MCP_PUBLISHED_PORT=', '')
+        }
+    }
+}
+
+# Writes the nginx config and the /mcp graph list into ~/logseq-harbor/proxy, then (re)starts logseq-proxy.
+# It starts last because nginx resolves container names when it starts.
+function Start-Proxy {
+    $proxyDir = Resolve-HostPath '~/logseq-harbor/proxy'
+    New-Item -ItemType Directory -Force -Path $proxyDir | Out-Null
+    $webRunning = @(& $runtime @runtimeArgs ps --filter 'name=^logseq-web$' --filter 'status=running' --format '{{.Names}}' 2>$null).Count -gt 0
+    $syncRunning = @(& $runtime @runtimeArgs ps --filter 'name=^logseq-sync$' --filter 'status=running' --format '{{.Names}}' 2>$null).Count -gt 0
+    if (-not $syncRunning) { throw 'logseq-sync is not running; the proxy needs it' }
+
+    # Upstreams keep the headers nginx drops when a location sets its own proxy_set_header.
+    $common = @(
+        'proxy_http_version 1.1;',
+        'proxy_set_header Upgrade $http_upgrade;',
+        'proxy_set_header Connection $connection_upgrade;',
+        'proxy_set_header X-Forwarded-For $remote_addr;',
+        'proxy_set_header X-Forwarded-Proto $scheme;',
+        'proxy_buffering off;',
+        'proxy_read_timeout 3600s;',
+        'proxy_send_timeout 3600s;'
+    ) | ForEach-Object { "        $_" }
+
+    $locations = [System.Collections.Generic.List[string]]::new()
+    $locations.Add((@(
+        '    location = /mcp {',
+        '        alias /etc/harbor-proxy/mcp-index.json;',
+        '        default_type application/json;',
+        '    }'
+    ) -join "`n"))
+    $index = [System.Collections.Generic.List[object]]::new()
+    $routes = @{}
+    foreach ($portal in @(Get-McpPortals | Sort-Object Graph)) {
+        $route = Get-RouteSlug $portal.Graph
+        if ($routes.ContainsKey($route)) { throw "graphs '$($routes[$route])' and '$($portal.Graph)' share the /mcp route '$route'" }
+        $routes[$route] = $portal.Graph
+        $index.Add([pscustomobject]@{ graph = $portal.Graph; route = $route; url = "http://localhost:$webPort/mcp/$route" })
+        $locations.Add((@(
+            "    location = /mcp/$route {",
+            "        proxy_pass http://$($portal.Container):12315/mcp;",
+            "        proxy_set_header Host localhost:$($portal.Port);"
+        ) + $common + '    }') -join "`n")
+    }
+
+    $locations.Add((@(
+        '    location = /sync {',
+        '        return 308 $scheme://$http_host/sync/;',
+        '    }',
+        '    location /sync/ {',
+        '        proxy_pass http://logseq-sync:8787;',
+        '        proxy_set_header Host $host;'
+    ) + $common + '    }') -join "`n")
+
+    $locations.Add(
+        $(if ($webRunning) {
+            (@(
+                '    location / {',
+                '        proxy_pass http://logseq-web:80;',
+                '        proxy_set_header Host $host;'
+            ) + $common + '    }') -join "`n"
+        } else {
+            "    location / {`n        return 404;`n    }"
+        })
+    )
+
+    $conf = @(
+        'pid /tmp/nginx.pid;',
+        'error_log /dev/stderr warn;',
+        'events {}',
+        'http {',
+        '    access_log /dev/stdout;',
+        '    map $http_upgrade $connection_upgrade { default upgrade; ''''  close; }',
+        '    server {',
+        '        listen 80;',
+        '        client_max_body_size 0;',
+        ($locations -join "`n"),
+        '    }',
+        '}'
+    ) -join "`n"
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText((Join-Path $proxyDir 'nginx.conf'), "$conf`n", $utf8)
+    $indexJson = if ($index.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($index) -Depth 3 }
+    [IO.File]::WriteAllText((Join-Path $proxyDir 'mcp-index.json'), "$indexJson`n", $utf8)
+
+    Remove-HarborContainers @('logseq-proxy')
+    $proxyMount = $proxyDir -replace '\\', '/'
+    Invoke-Rt run -d --name logseq-proxy --network $network --restart unless-stopped `
+        -p "${webPort}:80" -v "${proxyMount}:/etc/harbor-proxy:ro" `
+        $proxyImage nginx -g 'daemon off;' -c /etc/harbor-proxy/nginx.conf | Out-Null
+    Write-Host "proxy on http://localhost:$webPort (/ web, /sync sync, /mcp graph list)"
+}
+
 function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
     $settings = Read-Settings
     $secrets = @{}
@@ -155,6 +271,13 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
         if ($graph -match '[\\/:*?"<>|]' -or $graph -ne $graph.Trim() -or -not (Get-GraphSlug $graph)) {
             throw "graph '$graph' must be a valid folder name (no \ / : * ? `" < > |)"
         }
+    }
+    $routeOwners = @{}
+    foreach ($graph in $graphs) {
+        $route = Get-RouteSlug $graph
+        if (-not $route) { throw "graph '$graph' has no characters usable in a /mcp route" }
+        if ($routeOwners.ContainsKey($route)) { throw "graphs '$($routeOwners[$route])' and '$graph' share the /mcp route '$route'" }
+        $routeOwners[$route] = $graph
     }
     $webEnabled = switch ($settings['web']) {
         { $_ -in 'true', $null, '' } { $true }
@@ -188,12 +311,13 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
             }
         }
         Start-McpContainers $graphs $graphsDir -OnlyMissing
+        Start-Proxy
         Show-McpPortals
         return
     }
 
     New-Item -ItemType Directory -Force -Path $syncDataDir | Out-Null
-    Remove-HarborContainers (@('logseq-sync', 'logseq-web', 'logseq-mcp') + @($graphs | ForEach-Object { 'logseq-mcp-' + (Get-GraphSlug $_) }))
+    Remove-HarborContainers (@('logseq-sync', 'logseq-web', 'logseq-proxy', 'logseq-mcp') + @($graphs | ForEach-Object { 'logseq-mcp-' + (Get-GraphSlug $_) }))
 
     Invoke-Rt run -d --name logseq-sync --network $network --restart unless-stopped `
         -p "${syncPort}:8787" `
@@ -208,14 +332,15 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
     Write-Host "sync on http://localhost:$syncPort"
 
     if ($webEnabled) {
-        Invoke-Rt run -d --name logseq-web --network $network --restart unless-stopped `
-            -p "${webPort}:80" $webImage | Out-Null
-        Write-Host "web on http://localhost:$webPort"
+        # The web app is reached through logseq-proxy, so it publishes no host port of its own.
+        Invoke-Rt run -d --name logseq-web --network $network --restart unless-stopped $webImage | Out-Null
+        Write-Host 'web container started (reached through the proxy)'
     } else {
         Write-Host 'web disabled in config.yaml'
     }
 
     Start-McpContainers $graphs $graphsDir
+    Start-Proxy
     Show-McpPortals
 }
 
@@ -260,14 +385,11 @@ function Start-McpContainers([string[]]$Graphs, [string]$GraphsDir, [switch]$Onl
 }
 
 function Show-McpPortals {
-    $names = @(& $runtime @runtimeArgs ps --filter 'name=logseq-mcp-' --filter 'status=running' --format '{{.Names}}' 2>$null)
-    if ($names.Count -eq 0) { Write-Host 'no active MCP portals'; return }
+    $portals = @(Get-McpPortals)
+    if ($portals.Count -eq 0) { Write-Host 'no active MCP portals'; return }
     Write-Host 'Active MCP portals:'
-    foreach ($name in $names) {
-        $envVars = @(& $runtime @runtimeArgs inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $name)
-        $graph = ($envVars | Where-Object { $_ -like 'LOGSEQ_GRAPH_NAME=*' }) -replace '^LOGSEQ_GRAPH_NAME=', ''
-        $port = ($envVars | Where-Object { $_ -like 'LOGSEQ_MCP_PUBLISHED_PORT=*' }) -replace '^LOGSEQ_MCP_PUBLISHED_PORT=', ''
-        Write-Host "  '$graph' -> http://localhost:$port/mcp"
+    foreach ($portal in $portals) {
+        Write-Host "  '$($portal.Graph)' -> http://localhost:$webPort/mcp/$(Get-RouteSlug $portal.Graph)  (direct: http://localhost:$($portal.Port)/mcp)"
     }
 }
 
