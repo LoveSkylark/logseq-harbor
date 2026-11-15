@@ -30,7 +30,7 @@ Set the two fields:
   endpoint and connects to each graph at `/mcp/<route>`. New graphs appear after
   Harbor regenerates the proxy and the extension restarts.
 - **Logseq MCP token**: the `logseq_mcp_token` value from Harbor's `config.yaml`.
-  Harbor's MCP containers all share this token.
+  Harbor's MCP containers and the proxy's `/mcp` page all require it.
 
 ## Behavior
 

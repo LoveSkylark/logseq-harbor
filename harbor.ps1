@@ -187,9 +187,16 @@ function Start-Proxy {
         'proxy_send_timeout 3600s;'
     ) | ForEach-Object { "        $_" }
 
+    $mcpToken = [Environment]::GetEnvironmentVariable('LOGSEQ_MCP_TOKEN')
+    if (-not $mcpToken) { $mcpToken = (Read-Settings)['logseq_mcp_token'] }
+    if (-not $mcpToken) { throw 'logseq_mcp_token is not set in config.yaml' }
+    # Escape the token for an nginx quoted string.
+    $nginxToken = [string]$mcpToken -replace '([\\"$])', '\$1'
+
     $locations = [System.Collections.Generic.List[string]]::new()
     $locations.Add((@(
         '    location = /mcp {',
+        ('        if ($http_authorization != "Bearer {0}") {{ return 401; }}' -f $nginxToken),
         '        alias /etc/harbor-proxy/mcp-index.json;',
         '        default_type application/json;',
         '    }'
@@ -245,7 +252,20 @@ function Start-Proxy {
     ) -join "`n"
     $utf8 = [System.Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText((Join-Path $proxyDir 'nginx.conf'), "$conf`n", $utf8)
-    $indexJson = if ($index.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($index) -Depth 3 }
+    # The instructions are shown to anyone who opens /mcp, so they must not contain tokens or other secrets.
+    $doc = [ordered]@{
+        generated_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        instructions = @(
+            'This is the Logseq Harbor graph list. Each graph runs in its own MCP server at its route.',
+            'Connect to one graph at a time with its graphs[].url. Use the bearer token from config.yaml as "Authorization: Bearer <logseq_mcp_token>".',
+            'Each tool call acts on exactly one graph. Name the target graph before any write.',
+            'Routes are lowercase and case-sensitive. A 502 on a listed route means that graph is stopped or still starting; check it with harbor.ps1 status.',
+            'This list is a snapshot from the last harbor.ps1 up or update. To add a graph, add it under graphs: in config.yaml and run harbor.ps1 update. It then appears here and its route works.',
+            'Clients that connect to several graphs read this list when they start. Restart them after an update to pick up new graphs.'
+        )
+        graphs = @($index)
+    }
+    $indexJson = ConvertTo-Json -InputObject $doc -Depth 4
     [IO.File]::WriteAllText((Join-Path $proxyDir 'mcp-index.json'), "$indexJson`n", $utf8)
 
     Remove-HarborContainers @('logseq-proxy')

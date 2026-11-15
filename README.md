@@ -100,7 +100,9 @@ becomes `logseq-mcp-Campaign---Northern-Light` and `mcp-data-Campaign---Northern
 - Proxy: `http://localhost:8080`
   - `/` web app (only when `web: true`)
   - `/sync/` sync server (`/sync` redirects there)
-  - `/mcp` JSON list of running graphs, each with `graph`, `route` and `url`. No auth.
+  - `/mcp` object with `generated_at`, `instructions` and `graphs` (each with `graph`, `route`, `url`).
+    Needs `Authorization: Bearer <logseq_mcp_token>` (`401` otherwise), like the graph routes.
+    It is a snapshot from the last `up` or `update`, so a new graph appears only after `harbor.ps1 update`.
   - `/mcp/<route>` MCP for one graph, with `Authorization: Bearer <logseq_mcp_token>`. The route is the
     graph name lowercased, with each run of other characters turned into `-`
     (`Campaign - 7th Trial` becomes `campaign-7th-trial`). Routes are case-sensitive.

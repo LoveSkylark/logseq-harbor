@@ -20,6 +20,13 @@ test("graph list from /mcp maps each graph to its loopback /mcp/<route> URL", ()
   ]);
 });
 
+test("graph list accepts the { graphs } object and the older bare array", () => {
+  const entry = { graph: "Personal", route: "personal", url: "http://127.0.0.1:8080/mcp/personal" };
+  assert.deepEqual(parseGraphList({ generated_at: "x", instructions: ["hi"], graphs: [entry] }).map(graph => graph.slug), ["Personal"]);
+  assert.deepEqual(parseGraphList([entry]).map(graph => graph.slug), ["Personal"]);
+  assert.throws(() => parseGraphList({ instructions: ["hi"] }), /graph list/);
+});
+
 test("graph list rejects non-arrays, non-loopback or non-graph URLs, and duplicate prefixes", () => {
   assert.throws(() => parseGraphList({ graph: "Personal" }), /graph list/);
   assert.throws(() => parseGraphList([{ graph: "X", url: "https://example.com/mcp/x" }]), /loopback/);

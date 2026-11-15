@@ -11,8 +11,10 @@ test("tools from every graph are listed with graph prefixes and calls route to t
     "http://localhost:8080/mcp/work-sensa": [{ name: "search", description: "Search" }, { name: "getPage", description: "Get page" }]
   };
   const listedUrls = [];
-  const fetchStub = async url => {
+  const listedAuthorizations = [];
+  const fetchStub = async (url, options = {}) => {
     listedUrls.push(String(url));
+    listedAuthorizations.push(options.headers && options.headers.Authorization);
     return {
       ok: true,
       status: 200,
@@ -59,6 +61,7 @@ test("tools from every graph are listed with graph prefixes and calls route to t
   });
   await started;
   assert.deepEqual(listedUrls, ["http://127.0.0.1:8080/mcp"]);
+  assert.deepEqual(listedAuthorizations, ["Bearer test-only"]);
 
   const listed = await downstreamHandlers.get("tools/list")({ params: {} }, {});
   // Arrays created inside the vm context fail strict deep-equality, so compare strings.

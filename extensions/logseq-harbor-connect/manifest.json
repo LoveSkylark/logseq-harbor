@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "logseq-harbor-connect",
   "display_name": "Logseq Harbor Connect",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Connect Claude Desktop to every Logseq MCP graph behind the Harbor proxy. Graphs are discovered from /mcp; tool names are prefixed with the graph name.",
   "author": {
     "name": "Logseq local development"

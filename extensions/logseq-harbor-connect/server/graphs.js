@@ -23,14 +23,16 @@ function parseProxyUrl(text) {
   return url;
 }
 
-// Entries come from the proxy's /mcp JSON list: [{ graph, route, url }].
+// Entries come from the proxy's /mcp list: { graphs: [{ graph, route, url }] }.
+// The bare array used by earlier proxies is still accepted.
 function parseGraphList(value) {
-  if (!Array.isArray(value)) {
+  const entries = Array.isArray(value) ? value : value?.graphs;
+  if (!Array.isArray(entries)) {
     throw new Error("The Logseq proxy /mcp endpoint did not return a graph list.");
   }
   const graphs = [];
   const slugs = new Set();
-  for (const entry of value) {
+  for (const entry of entries) {
     const name = typeof entry?.graph === "string" ? entry.graph.trim() : "";
     if (!name) throw new Error("A graph in the proxy list has no name.");
 

@@ -30,9 +30,15 @@ async function discoverGraphs(baseUrl) {
   const listUrl = new URL("/mcp", baseUrl);
   let response;
   try {
-    response = await fetch(listUrl, { signal: AbortSignal.timeout(10000) });
+    response = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000)
+    });
   } catch (error) {
     throw new Error(`Could not reach the Logseq proxy at ${listUrl}: ${error.message}`);
+  }
+  if (response.status === 401) {
+    throw new Error(`The Logseq proxy at ${listUrl} rejected the token. Check the Logseq API token in the extension settings.`);
   }
   if (!response.ok) {
     throw new Error(`The Logseq proxy at ${listUrl} returned HTTP ${response.status}.`);

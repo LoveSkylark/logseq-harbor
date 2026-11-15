@@ -23,11 +23,17 @@ graphs.
 | --- | --- | --- |
 | `http://localhost:8080/` | Web app | none |
 | `http://localhost:8080/sync` | Sync server (redirects to `/sync/`) | user login |
-| `http://localhost:8080/mcp` | JSON list of running graphs | none |
-| `http://localhost:8080/mcp/<route>` | MCP server for one graph | `Authorization: Bearer <token>` |
+| `http://localhost:8080/mcp` | JSON list of running graphs | bearer token |
+| `http://localhost:8080/mcp/<route>` | MCP server for one graph | bearer token |
 
-The proxy is `logseq-proxy`, published on port 8080. Each `/mcp` entry has:
-`graph` (the name as shown in Logseq), `route` (the path segment), and `url`.
+The proxy is `logseq-proxy`, published on port 8080. `/mcp` returns an object with
+`generated_at`, `instructions` (plain-language guidance, also meant for people who open the page), and
+`graphs`. Each entry in `graphs` has `graph` (the name as shown in Logseq), `route` (the path segment),
+and `url`.
+
+`/mcp` is a snapshot written by `harbor.ps1 up` and `update`. A new graph appears there only after
+`harbor.ps1 update`. Clients that connect to several graphs read it when they start, so restart them
+after an update.
 
 Route rule: lowercase the graph name and replace each run of characters that are
 not `a-z` or `0-9` with `-`, then trim the `-` at both ends. For example,
