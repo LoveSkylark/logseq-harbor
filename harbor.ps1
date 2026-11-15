@@ -50,6 +50,7 @@ $secretKeys = [ordered]@{
     LOGSEQ_MCP_TOKEN    = 'logseq_mcp_token'
     LOGSEQ_USERNAME     = 'logseq_username'
     LOGSEQ_PASSWORD     = 'logseq_password'
+    LOGSEQ_E2EE_PASSWORD = 'logseq_e2ee_password'
 }
 $secretNames = @($secretKeys.Keys)
 
@@ -81,7 +82,7 @@ function Read-Settings {
                 continue
             }
             $inGraphs = $false
-            if ($line -match '^([a-z_]+):\s*(.*?)\s*$') { $values[$matches[1]] = $matches[2].Trim('"', "'") }
+            if ($line -match '^([a-z0-9_]+):\s*(.*?)\s*$') { $values[$matches[1]] = $matches[2].Trim('"', "'") }
         }
     }
     $values['graphs'] = @($graphs)
@@ -145,8 +146,8 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
     foreach ($name in $secretNames) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if (-not $value) { $value = $settings[$secretKeys[$name]] }
-        if (-not $value) { throw "$($secretKeys[$name]) is not set in config.yaml" }
-        $secrets[$name] = $value
+        if (-not $value -and $name -ne 'LOGSEQ_E2EE_PASSWORD') { throw "$($secretKeys[$name]) is not set in config.yaml" }
+        $secrets[$name] = [string]$value
     }
     $graphs = @($settings['graphs'] | Where-Object { $_ })
     if ($graphs.Count -eq 0) { throw 'list at least one graph under graphs: in config.yaml' }
@@ -251,7 +252,7 @@ function Start-McpContainers([string[]]$Graphs, [string]$GraphsDir, [switch]$Onl
             --shm-size 1gb -p "${port}:12315" -v "${volume}:/data" `
             -v "${hostMount}:/data/home/logseq/graphs/$graph" `
             -e LOGSEQ_MCP_ENABLED=true -e LOGSEQ_MCP_HOST=0.0.0.0 -e LOGSEQ_MCP_PORT=12315 `
-            -e LOGSEQ_MCP_TOKEN -e LOGSEQ_USERNAME -e LOGSEQ_PASSWORD `
+            -e LOGSEQ_MCP_TOKEN -e LOGSEQ_USERNAME -e LOGSEQ_PASSWORD -e LOGSEQ_E2EE_PASSWORD `
             -e "LOGSEQ_GRAPH_NAME=$graph" -e "LOGSEQ_MCP_PUBLISHED_PORT=$port" -e "COGNITO_CLIENT_ID=$cognitoClientId" `
             -e SYNC_SERVER_URL=http://logseq-sync:8787 $mcpImage | Out-Null
         Write-Host "started MCP container for '$graph'"

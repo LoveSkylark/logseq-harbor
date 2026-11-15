@@ -38,6 +38,8 @@ db_sync_admin_token: <random string>
 logseq_mcp_token: <random string>
 logseq_username: <your Logseq account email>
 logseq_password: <your Logseq account password>
+# Needed for encrypted graphs (most of them). Headless MCP containers cannot ask for it.
+logseq_e2ee_password: <your Logseq encryption password>
 # Optional, defaults to http://localhost:8787
 # db_sync_base_url: http://localhost:8787
 ```
@@ -54,7 +56,9 @@ Values can be set in the environment instead, which overrides `config.yaml` (for
 `LOGSEQ_PASSWORD`). Generate the two tokens with any secure random generator, for example
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
-`logseq_password` is stored in plain text in `config.yaml` for now. Keep that file private.
+`logseq_password` and `logseq_e2ee_password` are stored in plain text in `config.yaml` for now. Keep that file private.
+`logseq_e2ee_password` is the encryption password you use in the desktop app. Headless MCP containers need it to
+download encrypted graphs; without it their graphs stay empty. It is optional for unencrypted graphs.
 
 ## Build
 

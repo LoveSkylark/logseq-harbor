@@ -98,28 +98,29 @@ async function main() {
   await assertRemoteGraphExists(tokens.idToken);
   console.log(`sync graph ${graphName} found`);
 
-  // Create the local graph record before the renderer opens it. Without it the first worker
-  // start fails with "Graph is absent or stopped by deletion". The renderer's own createGraph
-  // call in persist_db does not run early enough on this path.
-  const lifecycle = require('/opt/logseq/resources/app.asar/node_modules/@logseq/graph-lifecycle/index.cjs');
-  const root = path.join(env.HOME, 'logseq');
-  const storage = lifecycle.resolveStorage(root, path.join(root, 'graphs'));
-  const repo = `logseq_db_${graphName}`;
-  if (fs.existsSync(lifecycle.context(storage, repo).graphDir)) {
-    console.log(`local graph record ${graphName} already exists; skipping createGraph`);
-  } else {
-    await lifecycle.createGraph(storage, repo);
-    console.log(`created local graph record ${graphName}`);
-  }
+  // Headless saves of the E2EE password read the refresh token from this file, not from worker state.
+  fs.mkdirSync(path.join(env.HOME, 'logseq'), { recursive: true });
+  fs.writeFileSync(path.join(env.HOME, 'logseq', 'auth.json'), JSON.stringify({ 'refresh-token': tokens.refreshToken }));
 
+  // Nothing is created unless the sync graph exists (checked above). The download then creates the local record.
   await waitForMcp();
-  await callApi('app@download_graph_by_name', [
-    tokens.idToken,
-    tokens.accessToken,
-    tokens.refreshToken,
-    env.SYNC_SERVER_URL,
-    graphName,
-  ]);
+  // The API can answer before the db-worker finishes starting, so retry only that error.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await callApi('app@download_graph_by_name', [
+        tokens.idToken,
+        tokens.accessToken,
+        tokens.refreshToken,
+        env.SYNC_SERVER_URL,
+        graphName,
+        env.LOGSEQ_E2EE_PASSWORD || null,
+      ]);
+      break;
+    } catch (error) {
+      if (attempt >= 30 || !/db-worker has not been initialized/.test(error.message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
   console.log(`downloaded ${graphName}`);
 
   fs.writeFileSync(markerFile, new Date().toISOString());

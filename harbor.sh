@@ -33,7 +33,7 @@ web_port=8080
 mcp_base_port=12315
 cognito_client_id=69cs1lgme7p8kbgld8n5kseii6
 cognito_issuer=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_dtagLnju8
-secret_names=(DB_SYNC_ADMIN_TOKEN LOGSEQ_MCP_TOKEN LOGSEQ_USERNAME LOGSEQ_PASSWORD)
+secret_names=(DB_SYNC_ADMIN_TOKEN LOGSEQ_MCP_TOKEN LOGSEQ_USERNAME LOGSEQ_PASSWORD LOGSEQ_E2EE_PASSWORD)
 
 rt() {
   "$runtime" ${runtime_args[@]+"${runtime_args[@]}"} "$@"
@@ -61,7 +61,7 @@ read_settings() {
         continue
       fi
       in_graphs=0
-      if [[ "$line" =~ ^([a-z_]+):[[:space:]]*(.*[^[:space:]])?[[:space:]]*$ ]]; then
+      if [[ "$line" =~ ^([a-z0-9_]+):[[:space:]]*(.*[^[:space:]])?[[:space:]]*$ ]]; then
         key="${BASH_REMATCH[1]}"
         settings["$key"]="$(strip_quotes "${BASH_REMATCH[2]:-}")"
       fi
@@ -131,7 +131,7 @@ start_stack() {
   read_settings
   local name
   for name in "${secret_names[@]}"; do
-    if [[ -z "${settings[${name,,}]:-}" ]]; then
+    if [[ -z "${settings[${name,,}]:-}" && "$name" != LOGSEQ_E2EE_PASSWORD ]]; then
       echo "${name,,} is not set in config.yaml" >&2
       exit 1
     fi
@@ -268,7 +268,7 @@ start_mcp_containers() {
       --shm-size 1gb -p "$port:12315" -v "$volume:/data" \
       -v "$host_dir:/data/home/logseq/graphs/$graph" \
       -e LOGSEQ_MCP_ENABLED=true -e LOGSEQ_MCP_HOST=0.0.0.0 -e LOGSEQ_MCP_PORT=12315 \
-      -e LOGSEQ_MCP_TOKEN -e LOGSEQ_USERNAME -e LOGSEQ_PASSWORD \
+      -e LOGSEQ_MCP_TOKEN -e LOGSEQ_USERNAME -e LOGSEQ_PASSWORD -e LOGSEQ_E2EE_PASSWORD \
       -e "LOGSEQ_GRAPH_NAME=$graph" -e "LOGSEQ_MCP_PUBLISHED_PORT=$port" \
       -e "COGNITO_CLIENT_ID=$cognito_client_id" \
       -e SYNC_SERVER_URL=http://logseq-sync:8787 "$mcp_image" >/dev/null

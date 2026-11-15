@@ -64,7 +64,7 @@ PATCHES = {
             '''(defn ^:export rtc-start []
   (rtc-handler/<rtc-start! (state/get-current-repo)))
 
-(defn ^:export download-graph-by-name! [id-token access-token refresh-token sync-url graph-name]
+(defn ^:export download-graph-by-name! [id-token access-token refresh-token sync-url graph-name e2ee-password]
   (state/set-auth-id-token id-token)
   (state/set-auth-access-token access-token)
   (state/set-auth-refresh-token refresh-token)
@@ -73,7 +73,13 @@ PATCHES = {
   (js/localStorage.setItem "refresh-token" refresh-token)
   (js/localStorage.setItem "sync-server-url" sync-url)
   (state/set-current-repo! (str "logseq_db_" graph-name))
-  (p/let [graphs (rtc-handler/<get-remote-graphs)
+  (p/let [_ (state/<invoke-db-worker :thread-api/sync-app-state
+                                     {:auth/id-token id-token
+                                      :auth/access-token access-token
+                                      :auth/refresh-token refresh-token})
+          _ (when (seq e2ee-password)
+              (state/<invoke-db-worker :thread-api/verify-and-save-e2ee-password refresh-token e2ee-password))
+          graphs (rtc-handler/<get-remote-graphs)
           graph (some #(when (= graph-name (:GraphName %)) %) graphs)]
     (if graph
       (rtc-handler/<rtc-download-graph! graph-name (:GraphUUID graph) (:graph-e2ee? graph))
