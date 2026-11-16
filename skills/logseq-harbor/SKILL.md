@@ -1,5 +1,5 @@
 ---
-name: logseq-db
+name: logseq-harbor
 description: "Use when reading, organising, cleaning or modifying a Logseq 2.x DB graph through native Logseq Desktop MCP. Read the graph guide first and keep owner-approved conventions current. Covers alias-aware findEntities search, DB queries, exact identifiers, verified writes, imports, recycled-title reuse, linked embeds, and recovery from ambiguous results. Never use file-graph or non-DB Logseq tools."
 ---
 

@@ -5,7 +5,7 @@ This skill targets the native MCP server built into Logseq Desktop for Logseq
 `logseq-db-graph` or `logseq-file-graph` skill.
 
 Install this folder using the skill mechanism supported by your agent client.
-For Claude Desktop, import the `logseq-db` folder under **Settings >
+For Claude Desktop, import the `logseq-harbor` folder under **Settings >
 Customize > Skills**, then enable it in a conversation with the relevant
 Logseq DB MCP connector. Other clients may use a different discovery path.
 
