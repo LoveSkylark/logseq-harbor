@@ -193,6 +193,17 @@ function Start-Proxy {
     # Escape the token for an nginx quoted string.
     $nginxToken = [string]$mcpToken -replace '([\\"$])', '\$1'
 
+    # Basic auth guards only the web app at /. /sync and /mcp keep their own sign-in and token.
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    if ($webRunning) {
+        $settings = Read-Settings
+        if (-not $settings['web_user'] -or -not $settings['web_password']) {
+            throw 'web_user and web_password must be set in config.yaml while web is true'
+        }
+        $passwordHash = [Convert]::ToBase64String([Security.Cryptography.SHA1]::Create().ComputeHash($utf8.GetBytes($settings['web_password'])))
+        [IO.File]::WriteAllText((Join-Path $proxyDir 'htpasswd'), "$($settings['web_user']):{SHA}$passwordHash`n", $utf8)
+    }
+
     $locations = [System.Collections.Generic.List[string]]::new()
     $locations.Add((@(
         '    location = /mcp {',
@@ -228,6 +239,8 @@ function Start-Proxy {
         $(if ($webRunning) {
             (@(
                 '    location / {',
+                '        auth_basic "Logseq Harbor";',
+                '        auth_basic_user_file /etc/harbor-proxy/htpasswd;',
                 '        proxy_pass http://logseq-web:80;',
                 '        proxy_set_header Host $host;'
             ) + $common + '    }') -join "`n"
@@ -250,7 +263,6 @@ function Start-Proxy {
         '    }',
         '}'
     ) -join "`n"
-    $utf8 = [System.Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText((Join-Path $proxyDir 'nginx.conf'), "$conf`n", $utf8)
     # The instructions are shown to anyone who opens /mcp, so they must not contain tokens or other secrets.
     $doc = [ordered]@{
@@ -306,6 +318,7 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
     }
     $graphsDir = Resolve-HostPath $(if ($settings['graphs_dir']) { $settings['graphs_dir'] } else { '~/logseq-harbor/graphs' })
     $syncDataDir = Resolve-HostPath $(if ($settings['sync_data_dir']) { $settings['sync_data_dir'] } else { '~/logseq-harbor/sync-data' })
+    $appDataDir = Resolve-HostPath $(if ($settings['mcp_data_dir']) { $settings['mcp_data_dir'] } else { '~/logseq-harbor/app-data' })
     $baseUrl = if ($settings['db_sync_base_url']) { $settings['db_sync_base_url'] } else { "http://localhost:$syncPort" }
 
     foreach ($image in $syncImage, $webImage, $mcpImage) {
@@ -330,7 +343,7 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
                 Write-Host "removed MCP containers for graphs no longer in config.yaml: $($stale -join ', ')"
             }
         }
-        Start-McpContainers $graphs $graphsDir -OnlyMissing
+        Start-McpContainers $graphs $graphsDir $appDataDir -OnlyMissing
         Start-Proxy
         Show-McpPortals
         return
@@ -359,12 +372,12 @@ function Start-Stack([switch]$McpOnly, [switch]$ClearStale) {
         Write-Host 'web disabled in config.yaml'
     }
 
-    Start-McpContainers $graphs $graphsDir
+    Start-McpContainers $graphs $graphsDir $appDataDir
     Start-Proxy
     Show-McpPortals
 }
 
-function Start-McpContainers([string[]]$Graphs, [string]$GraphsDir, [switch]$OnlyMissing) {
+function Start-McpContainers([string[]]$Graphs, [string]$GraphsDir, [string]$AppDataDir, [switch]$OnlyMissing) {
     # update must not reuse a port held by a running portal, so it takes the first free one.
     $usedPorts = @()
     if ($OnlyMissing) {
@@ -387,14 +400,15 @@ function Start-McpContainers([string[]]$Graphs, [string]$GraphsDir, [switch]$Onl
         } else {
             $port = $mcpBasePort + $i
         }
-        $volume = "mcp-data-$slug"
+        $appDataHostDir = Join-Path $AppDataDir $slug
+        New-Item -ItemType Directory -Force -Path $appDataHostDir | Out-Null
         $hostDir = Join-Path $GraphsDir $graph
         New-Item -ItemType Directory -Force -Path $hostDir | Out-Null
         # Podman accepts forward slashes for Windows host paths.
         $hostMount = $hostDir -replace '\\', '/'
-        Ensure-Volume $volume
+        $appDataMount = $appDataHostDir -replace '\\', '/'
         Invoke-Rt run -d --name "logseq-mcp-$slug" --network $network --restart unless-stopped `
-            --shm-size 1gb -p "${port}:12315" -v "${volume}:/data" `
+            --shm-size 1gb -p "${port}:12315" -v "${appDataMount}:/data" `
             -v "${hostMount}:/data/home/logseq/graphs/$graph" `
             -e LOGSEQ_MCP_ENABLED=true -e LOGSEQ_MCP_HOST=0.0.0.0 -e LOGSEQ_MCP_PORT=12315 `
             -e LOGSEQ_MCP_TOKEN -e LOGSEQ_USERNAME -e LOGSEQ_PASSWORD -e LOGSEQ_E2EE_PASSWORD `

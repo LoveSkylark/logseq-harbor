@@ -47,6 +47,7 @@ logseq_e2ee_password: <your Logseq encryption password>
 
 - `graphs`: one MCP container starts per entry. Ports are assigned in order from 12315 (12315, 12316, ...).
 - `web`: `true` starts the web app behind the proxy at `http://localhost:8080/`; `false` skips it. The proxy starts either way.
+- `web_user` / `web_password`: HTTP basic auth for the web app at `/` (required when `web: true`). Sync (`/sync/`) uses the Logseq login, and MCP uses its bearer token, so neither uses these.
 - `graphs_dir`: host folder for the graph files. Each graph is mounted at `<graphs_dir>/<graph>`.
   `~` means your home folder.
 - `sync_data_dir`: optional host folder for the sync server's data (`index.sqlite`, assets, graphs). Defaults to
@@ -153,7 +154,7 @@ Removing containers keeps the data. Use `podman volume rm` only when you want to
 
 - `harbor.ps1`, `harbor.sh`: build and run the stack (PowerShell and bash)
 - `extensions/logseq-harbor-connect/`: Claude Desktop extension that connects to every graph listed by `/mcp`
-- `skills/logseq-db/`: agent skill for DB graphs, including `reference/harbor-multi-graph.md`
+- `skills/logseq-harbor/`: agent skill for DB graphs, including `reference/harbor-multi-graph.md`
 - `config.yaml`: your graphs, web switch, host graph folder and credentials (git-ignored)
 - `sync/Dockerfile`, `web/Dockerfile`: sync and web images, built from the `logseq` source
 - `mcp/Dockerfile`: builds the Electron app and creates the headless runtime image
